@@ -1,0 +1,1129 @@
+---
+title: "Florida Campaign Contributions 2016"
+output: html_document
+---
+
+========================================================
+```{r global_options, include=FALSE}
+knitr::opts_chunk$set(fig.width=6, fig.height=4, fig.path='Figs/',
+                      echo=FALSE, warning=FALSE, message=FALSE)
+```
+
+
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, packages}
+
+# Load all of the packages that you end up using
+# in your analysis in this code chunk.
+
+# Notice that the parameter "echo" was set to FALSE for this code chunk.
+# This prevents the code from displaying in the knitted HTML output.
+# You should set echo=FALSE for all code chunks in your file.
+
+library(ggplot2)
+library(plyr)
+library(dplyr)
+library(vioplot)
+library(gridExtra)
+library(zoo)
+library(GGally)
+library(scales)
+library(memisc)
+
+```
+# Introduction
+
+Though tempted by the subject and predicted analytical brevity of the wine datasets, I was curious about data related to 2016 election, which most mainstream analyses got so wrong.  (Though it could be argued, as Raza Irizarry <a href = "http://simplystatistics.org/2016/11/09/not-all-forecasters-got-it-wrong/">does here </a> that if you look at confidence intervals, Nate Silver actually did get it right.)
+
+The FEC offers data on campaign contributions by state <a href = "http://fec.gov/disclosurep/pnational.do"> here </a>.  I decided to look at Florida's because of its swing state status, interesting mix of demographics, and relatively large data set.  
+
+# Univariate Plots
+
+```{r echo=FALSE, Load_the_Data}
+# Load the Data
+FL <- read.csv("P00000001-FL.csv", header=T, check.names = FALSE)
+dim(FL)
+names(FL)
+str(FL)
+```
+```{r Reformatting dates and zips}
+
+#Create new variable "date" with date in date format
+FL$date <- as.Date(FL$contb_receipt_dt, format = "%d-%B-%y")
+
+#Create new variable "zip" with only valid zipcodes in 5 digit format
+
+FL$zip <- substr(FL$contbr_zip, 0, 5)
+FL$zip[FL$zip < 32000 | FL$zip > 35000] <- NA
+FL$zip[FL$zip == 3334 | FL$zip == 3429] <- NA
+FL$zip <- as.integer(FL$zip)
+```
+
+There is a good explanation of the data <a href = "ftp://ftp.fec.gov/FEC/Presidential_Map/2016/DATA_DICTIONARIES/CONTRIBUTOR_FORMAT.txt"> here </a>  The one major category I found missing was the political party of the candidate, so I went about adding that feature first.
+
+```{r creating political parties based on candidates}
+
+summary(FL$cand_nm)
+unique(FL$cand_nm)
+
+index <- c("Johnson, Gary", 
+           "Stein, Jill", 
+           "McMullin, Evan", 
+           "Clinton, Hillary Rodham", 
+           "Sanders, Bernard", 
+           "Lessig, Lawrence", 
+           "O'Malley, Martin Joseph", 
+           "Webb, James Henry Jr.",
+           "Bush, Jeb",
+           "Carson, Benjamin S.",
+           "Christie, Christopher J.",
+           "Cruz, Rafael Edward 'Ted'",
+           "Fiorina, Carly",
+           "Gilmore, James S III",
+           "Graham, Lindsey O.",
+           "Huckabee, Mike", 
+           "Jindal, Bobby", 
+           "Kasich, John R." , 
+           "Pataki, George E." ,                
+           "Paul, Rand",    
+           "Perry, James R. (Rick)", 
+           "Rubio, Marco",          
+           "Santorum, Richard J.",
+           "Trump, Donald J.",
+            "Walker, Scott") 
+
+values <- c("libertarian",
+            "green",
+            "independent",
+            "democrat", "democrat",
+            "democrat", "democrat",
+            "democrat", "republican",
+            "republican", "republican",
+            "republican", "republican",
+            "republican", "republican",
+            "republican", "republican",
+            "republican", "republican",
+            "republican", "republican",
+            "republican", "republican",
+            "republican", "republican")
+
+FL$party <- values[match(FL$cand_nm, index)]
+FL$party <- factor(FL$party)
+summary(FL$party)
+```
+```{r Number of contributions per party}
+qplot(data = FL, x = party) 
+```
+
+There were nearly twice as many contributions towards Democratic candidates as Republicans, of course this has nothing to say about amounts.  Third party contributions trail far behind.
+
+```{r Number of contributions per candidate}
+qplot(data = FL, x = cand_nm, fill = party) +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1)) 
+```
+
+Because of the large disparity in contributions between the least and most popular candidates, a log transform of y-axis is appropriate.
+
+```{r Number of contributions per candidate scaled}
+
+party_color <- c('#0e50D8', '#009933', '#6600CC', '#FCD003', '#CC0000')
+
+ggplot(FL, aes(x = cand_nm, fill = party)) +
+  geom_bar() + 
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5)) +
+  scale_y_log10() +
+  scale_fill_manual(values = party_color)
+  
+```
+```{r Amount histogram}
+names(FL)[names(FL) == "contb_receipt_amt"] <- "amt"
+qplot(FL$amt, geom = "histogram", bins = 1000) 
+```
+
+Presumably the x-axis has been plotted this way because there are large positive and negative amounts.  Let's check those out more closely.
+
+```{r Negative Donations}
+
+head(subset(FL, amt < 0)$receipt_desc)
+
+subset(FL, amt == 20000 | amt < -20000)
+```
+
+It appears that these negative numbers are in fact legitimiate and are either refunds or redesignation to the general funds. There's also one very interesting data point: a 20,000 dollar contribution and subsequent refund the following day from a self-employed physician in Jupiter to Hillary Clinton. Let's try the boxplots again just looking within the 1 - 99% of data.
+
+```{r Contribution Amount Histogram}
+
+qplot(FL$amt, geom = "histogram", bins = 50) +
+  xlim(1, quantile(FL$amt, 0.9)) +
+  scale_x_log10(breaks = c(1, 5, 10, 25, 50, 100, 250, 500, 1000, 2500))
+```
+
+When addng a log10 transformation to the x-axis there is a relatively normal distribution, though there are spikes at regular intervals like 10, 25, 50, 100, 250, 500, 1000, and 2500, because people are more like to contirbute 100 dollars than say, 88.
+
+```{r Contributors}
+
+names(FL)[names(FL)=="contbr_nm"] <- "name"
+cont_table <- table(FL$name)
+
+more_than_1 <- subset(FL, name %in% names(cont_table[cont_table > 1]))$name
+
+length(unique(more_than_1))
+
+top_conts <- subset(FL, name %in% names(cont_table[cont_table > 150]))
+
+reorder_size <- function(x) {
+  factor(x, levels = names(sort(table(x))))
+}
+
+ggplot(top_conts, 
+       aes(x = reorder_size(name))) +
+  geom_bar() + 
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5)) 
+
+head(sort(cont_table, decreasing = T))
+
+```
+
+There were quite a few people (42,066) who contributed more than once, and even quite a few who contributed more than 150 times, though the maximum number is 261 times.
+
+```{r Counts of contributions in cities}
+
+names(FL)[names(FL)=="contbr_city"] <- "city"
+
+city_table <- table(FL$city)
+top_cities <- subset(FL, city %in% names(city_table[city_table > 3000]))
+
+ggplot(top_cities, 
+       aes(x = reorder_size(city))) +
+  geom_bar() + 
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5)) 
+  
+```
+
+As expected, the city with the highest number of contributions was Miami, followed by other large urban centers such as Tampa, Orlando, and Naples.  There were some unknown to me cities such as Boynton Beach, The Villages, and Vero Beach that also had a large number of contributions.
+
+```{r Zip Bar, fig.height=10, fig.width=10}
+
+zip_table <- table(FL$zip)
+top_zips <- subset(FL, zip %in% names(zip_table[zip_table > 1500]))
+
+p1 <- ggplot(top_zips,
+       aes(reorder_size(zip))) + 
+  geom_bar() + 
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.4)) 
+
+
+p2 <- ggplot(subset(top_zips, 
+                    party == 'democrat' | party == 'republican'),
+       aes(reorder_size(zip), fill = zip)) + 
+  geom_bar() + 
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.4)) +
+  geom_hline(yintercept = 1000, linetype = 2, color = 'red') +
+  facet_wrap(~party)
+
+grid.arrange(p1, p2, ncol = 1)
+
+```
+
+Though this is venturing into the bivariate, bear me with me.  From the first plot, we were aware that there were more Democratic contributions than Republican.  However, a few zipcodes stand out when we compare beyond this trend.  The bars are ordered from least number of overall contributions to highest number of overall contributions.  The following zip codes stand out because they have a particularly high number of Republican to Democratic contributions:
+
+- 32802 - Ponte Vedra Beach  -- Where the PGA tour takes places, an upper income resort area
+- 32963 - Vero Beach 
+- 33480 - South Palm Beach
+
+The following stand out because they have relatively equal ratios of R to D:
+
+- 32162 - The Villages
+- 33908 - Fort Myers
+
+And these stand out because they have much higher numbers of D to R:
+
+- 32605 - Gainesville -- Where the large state univeristy is
+- 33040 - Key West
+- 33193 - Miami
+- 33437 - Boynton Beach 
+
+While there are already interesting trends revealing themselves here, the main purpose of this is to show that most of the highest contributing zip codes also have counterparts as cities.  For that reason they are redundant and I will only analyze city from here on, since it is more easily understandable on first sight. If I were building a regression model, zip codes would come more in handy since they are numerical.
+
+```{r Occupation bar chart, fig.height=4, fig.width=3}
+
+names(FL)[names(FL)=="contbr_occupation"] <- "occ"
+
+FL$occ[FL$occ == "INFORMATION REQUESTED PER BEST EFFORTS"] <- "INFORMATION REQUESTED"
+FL$occ[FL$occ == ""] <- "INFORMATION REQUESTED"
+FL$occ[FL$occ == "SELF EMPLOYED"] <- "SELF-EMPLOYED"
+
+occ_table <- table(FL$occ)
+top_occs <- subset(FL, occ %in% names(occ_table[occ_table > 2000]))
+
+ggplot(top_occs, 
+       aes(x = reorder_size(occ))) +
+  geom_bar() + 
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5))
+
+```
+
+While it will be very interesting to see how these breakdown across party or candidate, for now we know that the top occupations are retired, not-employed, and people who did not specify what their employment was.
+
+```{r Employed information}
+
+FL$contbr_employer[FL$contbr_employer == "INFORMATION REQUESTED PER BEST EFFORTS"] <- "INFORMATION REQUESTED"
+FL$contbr_employer[FL$contbr_employer == ""] <- "INFORMATION REQUESTED"
+FL$contbr_employer[FL$contbr_employer == "SELF EMPLOYED"] <- "SELF-EMPLOYED"
+head(sort(table(FL$contbr_employer), decreasing = TRUE), n = 15)
+```
+
+Because the top contributors are retired, not employed or self-employed, using employer information is redundant and will not be further considered.  It is interesting to note that the largest employers are universities.
+
+
+```{r Election type bar}
+
+ggplot(FL, aes(x = election_tp)) + geom_bar()
+```
+
+Clearly there were more contributions during the primaries than during the general election, though there was one contribution towards 2020, and several unmarked contributions. Perhaps this commentary on the electorate's enthutiasm about about the final candidates.
+
+```{r echo=FALSE}
+
+p1 <- ggplot(FL, aes(x = date)) +
+  geom_histogram(binwidth = 1) +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5)) +
+  scale_x_date(date_breaks = "1 month") 
+
+p2 <- ggplot(FL, aes(x = as.numeric(date))) +
+  geom_histogram(bins = 1000) +
+  scale_x_log10() 
+
+grid.arrange(p1, p2, ncol = 1)
+
+```
+
+As my final univariate plot, I look at a histogram of date.  Though more contributions were made to primary races, contributions did not pick up until April of 2015, peaking in July and August of 2016.  Using a log10 transform on a numeric version of the data did not appear to significatly alter the the highly left-skewed data. 
+
+# Univariate Analysis
+
+### Dataset structure
+
+This data set includes 359419 contributions (or contribution refunds) towards presidential campaigns in the 2016 election cycle in Florida.  Each observation includes the following 18 features: committee id, candidate id, candidate name, contributor name, contributor state (in this case all = FL), contributor zip code, contributor city, contributor employer, contributor occupation, contribution receipt amount, contribution receipt date, receipt description, memo code, memo text, form type, file number, transaction id, and election type.  
+
+Of these, I only considered or will consider candidate name (synonymous with candidate id), contributor name, contributor city, contributor occupation, contribution receipt amount, receipt description, date and party.
+
+There is a more detailed explanation of the data available <a href = "ftp://ftp.fec.gov/FEC/Presidential_Map/2016/DATA_DICTIONARIES/CONTRIBUTOR_FORMAT.txt"> here </a>. 
+
+Other observations:
+- There are some negative values because of refunds or because a contribution was reattributed to a spouse or redesignated for the general election rather than the primaries. (This was discovered by reading the memo line of negative contributions.)
+- Far more contrbutions went towards the primary: 265962 as compared to 92280 towards the general election. (And one towards the 2020 election.)  This explains why there are contributions to 25 candidates rather than just a handful.
+- Despite this, most contributions were made in 2016 rather than earlier on.
+
+### What is/are the main feature(s) of interest in your dataset?
+
+I am interested in the following questions:
+
+- Which candidates received the highest number of contributions?
+- What was the distribution of contribution amount for each candidate?
+- How did location and occupation affect which candidate or party the contribution went to?
+
+### What other features in the dataset do you think will help support your investigation into your feature(s) of interest?
+
+Digging deeper I would like to look at the following:
+
+- How did contributions change over time in regards to whom received the contributions? I would suspect that at first contributions were widely spread, but then came to a narrow focus after the convetions took place, when third party candidates got a boost.
+- How did the dollar amount of contributions change over time?
+- Were there people who contributed multiple times? How did their contributions change over time?
+
+### Did you create any new variables from existing variables in the dataset?
+
+So far I have created the political party variable. I plan on also finding the mean and median amount of contribution for each candidate and for each day of the election cycle. 
+### Of the features you investigated, were there any unusual distributions? Did you perform any operations on the data to tidy, adjust, or change the form of the data? If so, why did you do this?
+
+There were a couple of unusual distributions. First off, as previously stated, I was surprised to find negative contribution amounts.  However, they were legitimate and I decided to keep them in order to more accurately calculate total and therefore mean contributions.  Additionally I changed the receipt_dt into date format for better time series plots.  Finally I standardized zip codes, as some where in the 9 digit format.  Some were also not zipcodes as they had less than 5 digits or were out of state zip codes.  According to <a href = "http://www.unitedstateszipcodes.org/fl/"> reference </a> all Florida zip codes are between [32000, 35000]. I renamed lengthy variable names, and consolidated common values( e.g. "self-employed" and "self employed").Also, when plotting histograms of the number of contributions or the contribution amount I used the log10 tranformation in order to better visualize the relative distribution.
+
+
+# Bivariate Plots Section
+
+```{r Creating a smaller dataframe}
+
+cand_table <- table(FL$cand_nm)
+
+small_fl <- subset(FL, select = c("cand_nm", "city","amt", "date", "party"))
+small_fl <- subset(small_fl, cand_nm %in% names(cand_table[cand_table > 1000]))
+small_fl <- subset(small_fl, city %in% names(city_table[city_table > 5000]))
+
+#Recast as character than factor to jettison extraneous factors
+small_fl$cand_nm <- as.character(small_fl$cand_nm)
+small_fl$cand_nm <- as.factor(small_fl$cand_nm)
+
+small_fl$city <- as.character(small_fl$city)
+small_fl$city <- as.factor(small_fl$city)
+```
+
+```{r GGpairs, fig.height=12, fig.width=12}
+set.seed(2016)
+fl_samp <- small_fl[sample(1:length(small_fl$cand_nm), 10000), ]
+ggpairs(fl_samp, 
+  lower = list(continuous = wrap("points", shape = I('.'))), 
+  upper = list(combo = wrap("box", outlier.shape = I('.'))))
+```
+
+Since most of the data is categorical, there i only one correlation coefficient (between amout and date) that is calculated. It is negative showing that amounts decreased over time, but very weak (-.198)  I will explore much of the bivariate data using boxplots and barcharts.
+
+```{r Contribution Amount Histograms faceted by party with log transforms1}
+
+dem_rep <- subset(FL, party == 'democrat' | party == 'republican')
+
+ggplot(dem_rep, aes(x = amt)) +
+  geom_histogram(bins = 30)+
+  scale_x_log10(breaks = c(1, 5, 10, 25, 50, 100, 250, 500, 1000, 2500)) +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5)) +
+  facet_wrap(~party)
+
+ggplot(dem_rep, aes(x = amt)) +
+  geom_histogram(bins = 30)+
+  xlim(101, 3000) +
+  ylim(0,10000) +
+  facet_wrap(~party)
+
+```
+
+Democratic contributions, especially below 100 dollars, were much more common while larger contributions were more popular for Republican contributors.
+
+```{r Party box plots}
+ggplot(top_cities, 
+       aes(x = reorder(party, amt, FUN = median), y = amt)) +
+  geom_boxplot() +
+  coord_cartesian(ylim = c(0,500)) +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5))
+```
+
+Because there were so many Democratic and Republican contributions, there were many outliers in those boxplots. The medians from lowest to highest were Democrat, Green, Republican and Libertarian, Independent. Democrats had the smallest interquartile range but the most outliers.  
+
+
+```{r Frequency Polygons by Party}
+
+p1 <- ggplot(FL, aes(x = amt, color = party, bins = 1000)) +
+      geom_freqpoly() +  scale_x_log10()
+p2 <- p1 + scale_y_log10()
+
+grid.arrange(p1, p2, ncol=1)  
+```
+
+
+When comparing all parties' contribution amounts, transfomring both x and y axis by log 10 allows us to see the relatively normal distribution of all. However, it clear from the first plots that there were more Democratic contributions than other parties for amounts less than $100 dollars, but that after that point, the number of Republican contributions is equal to or greater than the amount for democrats. (As shown in the previous amount histograms.)
+
+
+```{r Amount boxplots }
+ggplot(FL, aes(x = cand_nm , y = amt)) +
+  geom_boxplot() +
+  ylim(0, quantile(FL$amt, 0.9)) +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5))
+```
+
+```{r Scaled Democratic boxplots}
+
+ggplot(subset(FL, party == 'democrat'), 
+       aes(x = reorder(cand_nm, amt, FUN = median), y = amt)) +
+  geom_boxplot() +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5)) +
+  ylim(quantile(FL$amt, 0.01), quantile(FL$amt, 0.99)) 
+
+```
+
+
+Adding a jitter to these boxplots may help us see how densely packed they are.
+
+```{r Democratic Boxplots + Jitter}
+ggplot(subset(FL, party == 'democrat'), 
+       aes(x = reorder(cand_nm, amt, FUN = median), y = amt)) +
+  geom_boxplot(outlier.shape = NA, color = 'blue')+
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5)) +
+  ylim(quantile(FL$amt, 0.01), quantile(FL$amt, 0.99)) +
+  geom_jitter(alpha = .1, position=position_jitter(width=.4, height=0)) 
+
+summary(subset(FL, party == 'democrat')$amt)
+```
+
+
+From this graph it's clear that Clinton and Sanders received far more contributions than the other democratic candidates, and this helps to explain the number of outliers for these two candiates. It also appears they are the only ones with significant negative "contributions".  O'Malley had a higher 3rd quartile and median than his other two lesser known competitors.  Let's take a look at just Clinton's and Sander's boxplots.
+
+```{r Sanders Clinton Boxplots + Jitter, fig.width=8}
+p1 <- ggplot(subset(FL, 
+              (cand_nm == 'Clinton, Hillary Rodham' | 
+                 cand_nm == 'Sanders, Bernard')), 
+              aes(x = cand_nm , y = amt)) +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5)) +
+  ylim(quantile(FL$amt, 0.01), quantile(FL$amt, 0.99)) +
+  geom_jitter(alpha = .1, position=position_jitter(width=.3, height=0)) +
+  geom_boxplot(outlier.shape = NA, color = 'blue', alpha = 0.5) 
+
+p2 <- ggplot(subset(FL, 
+              (cand_nm == 'Clinton, Hillary Rodham' | 
+                 cand_nm == 'Sanders, Bernard')), 
+              aes(x = cand_nm , y = amt)) +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5)) +
+  coord_cartesian(ylim = c(0, 100)) +
+  geom_boxplot() 
+
+grid.arrange(p1, p2, ncol =2)
+```
+
+
+So it's clear that Clinton received more contributions with higher amounts than Sanders.  As can be seen, many of the most popular values are regular intervals of 100 or 1000, espeically 1000 and also 1500, 1750, and 2000 for Clinton.
+
+Both Clinton and Sanders had a median contribution amount of 25 dollars, though Clinton's 3rd quartile is 75 while Sanders is 50.  Let's take a look at the Republican candidate's amount boxplots.
+
+  
+```{r Republican Boxplots + Jitter}
+ggplot(subset(FL, party == 'republican'), 
+       aes(x = reorder(cand_nm, amt, FUN = median), y = amt)) +
+    theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5)) +
+  ylim(quantile(FL$amt, 0.01), quantile(FL$amt, 0.99)) +
+  geom_jitter(alpha = .1, position=position_jitter(width=.4, height=0)) +
+  geom_boxplot(outlier.shape = NA, color = 'red', alpha = 0.5)
+```
+
+As in the democratic boxplots, there are regular intervals (such as 500 and 1000) that are more common.  Interestingly, many candidates 3rd quantiles reach the 99% cut-off, including Bush, Christie, Jindal, and Pataki, meaning they had several large amount contributions.  
+
+The fact that the more popular candidates, Cruz, Carson, Rubio, and Trump do not have high 3rd quartiles does not mean that they did not receive such contributions, just that they have many more contributions that fall in a lower range and therefore large donation are deemed outliers.  Let'stake a look at it without the jitter.
+
+```{r Republican boxplots}
+ggplot(subset(FL, party == 'republican'), 
+       aes(x = reorder(cand_nm, amt, FUN = median), y = amt)) +
+  geom_boxplot()+
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5)) +
+  ylim(quantile(FL$amt, 0.01), quantile(FL$amt, 0.99)) 
+```
+
+
+This plot actually shows things a bit more clearly than the boxplots with jitter. Let's focus in on the four republican contenders with the most number of contributions. 
+
+```{r Focused Repblican Boxplots}
+ggplot(subset(FL, 
+              (cand_nm == 'Carson, Benjamin S.' | 
+                 cand_nm == "Cruz, Rafael Edward 'Ted'" |
+                 cand_nm == 'Rubio, Marco' |
+                 cand_nm == 'Trump, Donald J.')), 
+       aes(x = reorder(cand_nm, amt, FUN = median), y = amt)) +
+        geom_boxplot()+
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5)) +
+  coord_cartesian(ylim = c(0, 300))
+```
+
+Interestingly, though Trump boasted about how most of his contributions were in small amounts, his median is higher than Cruz's and Carson's.  Rubio has the highest median and largest IQR.  How about the third party candidates?
+
+```{r Third party boxplots, fig.width=8}
+p1 <- ggplot(subset(FL, party != 'republican' & party != 'democrat'), 
+       aes(x = reorder(cand_nm, amt, FUN = median), y = amt)) +
+  geom_boxplot()+
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5)) +
+  ylim(quantile(FL$amt, 0.01), quantile(FL$amt, 0.99)) 
+
+p2 <- ggplot(subset(FL, party != 'republican' & party != 'democrat'), 
+             aes(x = reorder(cand_nm, amt, FUN = median), y = amt)) +  
+  geom_boxplot()+
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5)) +
+  coord_cartesian(ylim = c(0, 500))
+
+grid.arrange(p1, p2, ncol = 2)
+
+```
+
+
+Without limiting the data we can see that Johnson had many more outliers beyond the third quartile than the other two, while Stein had a few and one distinct outlier.  McMullin had only one, but had highest median of the three.  
+
+How about trying a violinplot to see the distribution for the major candidates?
+
+```{r Violin plots of number of contributions}
+# Violin Plots
+
+hil <- FL$amt[FL$cand_nm == 'Clinton, Hillary Rodham']
+bern <- FL$amt[FL$cand_nm == 'Sanders, Bernard']
+trump <- FL$amt[FL$cand_nm == 'Trump, Donald J.']
+vioplot(hil, bern, trump, names=c('Clinton, Hillary Rodham',
+                                  'Sanders, Bernard', 'Trump, Donald J.'), 
+   col="gold")
+title("Violin Plots of Contribution Amounts")
+
+```
+
+
+Nothing out of the ordinary here -- the distributions seem relatively normal for each, however that distribution is widest for Clinton (much in thanks to our self-employed physician from Jupiter) and narrowest for Trump. 
+
+```{r Number of contributions by party}
+
+cand_table <- table(FL$cand_nm)
+top_cands <- subset(FL, cand_nm %in% names(cand_table[cand_table > 1500]))
+
+ggplot(top_cands, aes(x = party, fill = cand_nm)) +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5)) +
+  geom_bar()
+
+```
+
+
+It makes sense that Trump and Clinton got the largest number of contributions for their party since they ended up being the party nominations.
+
+```{r Candidates in Cities }
+
+ggplot(subset(top_cities, cand_nm %in% names(cand_table[cand_table > 1500])),
+       aes(reorder_size(city), fill = cand_nm)) + 
+  geom_bar() + 
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.4)) +
+  coord_flip()
+  
+```
+
+
+While the disparities here are interesting, it's a bit difficult to read on this stacked bar chart, so I've decided to facet it out.
+
+```{r Candidates in Cities separated out, fig.height=10, fig.width=10}
+
+city1 <- ggplot(subset(
+  subset(top_cities, cand_nm %in% names(cand_table[cand_table > 2500])), 
+  party == 'republican'),
+       aes(reorder_size(city), fill = cand_nm)) + 
+  geom_bar() + 
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.4)) + 
+  geom_hline(yintercept = 500, linetype =2) +
+  facet_wrap(~cand_nm)
+
+
+city2 <- ggplot(subset(
+  subset(top_cities, cand_nm %in% names(cand_table[cand_table > 2500])), 
+  party == 'democrat'),
+       aes(reorder_size(city), fill = cand_nm)) + 
+  geom_bar() + 
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.4)) + 
+  facet_wrap(~cand_nm) +
+  geom_hline(yintercept = 2500, linetype =2)
+
+grid.arrange(city1, city2, ncol = 1)
+  
+```
+
+The interesting points here are Rubio's popularity in Miami as compared to his Republican contributors and that Sanders received more contributions in Gainesville than Clinton, though the opposite is true in every other city.   
+
+```{r City by party, fig.width=14, fig.height=8}
+
+ggplot(subset(top_cities, party == 'democrat' | party == 'republican'),
+       aes(reorder_size(city))) + 
+  geom_bar() + 
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.4)) +
+  geom_hline(yintercept = 5000, linetype = 2, color = 'red') +
+  geom_hline(yintercept = 2500, linetype = 2, color = 'red') +
+  facet_wrap(~party)
+```
+
+Naples stands out as the only city whith more Republican contributions than Democratic, but it's difficult to tell with the smaller bar.  Let's dig into the ratios a bit more.
+
+
+```{r, Dem/Rep Ratios in cities, fig.height = 8, fig.width = 8}
+
+rep_cities = as.data.frame(table(subset
+                                 (top_cities, party == 'republican')$city))
+dem_cities = as.data.frame(table(subset
+                                 (top_cities, party == 'democrat')$city))
+
+names(rep_cities) <- c("city", "freq")
+names(dem_cities) <- c("city", "freq")
+city_ratio <- dem_cities
+city_ratio$city <- rep_cities$city
+city_ratio$freq = dem_cities$freq / rep_cities$freq
+names(city_ratio) <- c("city", "ratio")
+
+city_ratio <- subset(city_ratio, !is.na(ratio))
+city_ratio <- city_ratio[order(city_ratio$ratio),]
+top_cities <- merge(top_cities, city_ratio, by = "city")
+
+rat <- ggplot(city_ratio, 
+       aes(x = reorder(city, ratio), y = ratio)) + 
+  geom_line(group = 1) + 
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5, size = 12)) +
+  scale_y_continuous(breaks = c(0, 1, 2, 3, 4, 5, 6, 7)) +
+  geom_hline(yintercept = 1, linetype = 2, color = 'red') 
+
+cont <- ggplot(top_cities, 
+       aes(x = reorder(city, ratio))) + 
+  geom_bar() + 
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5, size = 12)) 
+
+grid.arrange(rat, cont, ncol =1)
+```
+
+
+We can see that there are relatively few cities were the ratio of Democratic contributions to Republican contributions is less than one. (I.e. there were more Republican contributions) These cities were Vero Beach, Naples, The Villages.  On the other hand, Gaineseville had over 7x as many Democratic contributions and Miami Beach had over 5 times as many Democratic contributions.  The degree to which a city is Democratic or Republican does not seem to correlate with the total number of contributions, which might somewhat approximate the size or population of the city.
+
+```{r, Occupation by party, fig.height=8, fig.width=10}
+
+p1 <- ggplot(subset(top_occs, party == 'democrat' | party == 'republican'),
+       aes(reorder_size(occ))) + 
+  geom_bar() + 
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.4)) +
+  geom_hline(yintercept = 1000, linetype = 2, color = 'red') +
+  scale_y_sqrt() +
+  facet_wrap(~party)
+
+p2 <- ggplot(subset(top_occs, (party != 'democrat' & party != 'republican')),
+       aes(reorder_size(occ))) + 
+  geom_bar() + 
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.4)) +
+  scale_y_log10() +
+  facet_wrap(~party)
+
+grid.arrange(p1, p2, ncol = 1)
+```
+
+Across parties, most contributions came from retired people. For Democrats, the occupations of the next top contributors were "not-employed", "information requested" and attorney.  For Republicans, not-employed was the lowest category, and for the third parties this category did not exist.  The next highest contributors among Republicans where "Information Requested", which was significantly higher than in Democrats and then attorney.  Other notable Republican dearths when compared to Democrats were managers, teachers, and professors.  Of the third party contributions, Libertarians had the widest spread of occupations followed by Greens and then Independents. However, there were zero professors for Libertarians, and it was one of the few occupations supporting Greens.  Note that the y-axis has undergone a log transformation for the third parties but not the main parties so that it was easier to see which occupations had contributed.
+
+```{r Occupation breakdown, fig.height=8, fig.width=12}
+
+p1 <- ggplot(subset(top_occs, party == 'republican'),
+       aes(occ)) + geom_bar() + 
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.4)) +
+  scale_y_sqrt() +
+  ggtitle("All Republican")
+
+p2 <- ggplot(subset(top_occs, cand_nm == "Trump, Donald J."),
+       aes(occ)) + geom_bar() + 
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.4)) +
+  scale_y_sqrt() +
+  ggtitle("Trump")
+
+rep <- grid.arrange(p1, p2, ncol = 2)
+
+p3 <- ggplot(subset(top_occs, party == 'democrat'),
+       aes(occ)) +  geom_bar() + 
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.4)) +
+  scale_y_sqrt() +
+  ggtitle("All Democrat")
+
+p4 <- ggplot(subset(top_occs, cand_nm == "Clinton, Hillary Rodham"),
+       aes(occ)) +  geom_bar() + 
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.4)) +
+  scale_y_sqrt() +
+  ggtitle("Clinton")
+
+p5 <- ggplot(subset(top_occs, cand_nm == "Sanders, Bernard"),
+       aes(occ)) +  geom_bar() + 
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.4)) +
+  scale_y_sqrt() +
+  ggtitle("Sanders")
+
+dem <- grid.arrange(p3, p4, p5, ncol = 3)
+
+grid.arrange(rep, dem, ncol =1)
+```
+
+The only difference between Trump's distribution amoung occupations and the overall Republican distribution is that there were fewer contributions from homemakers and more from "information requested" for Trump. Far fewer self-employed and unemployed people contributed to Clinton as compared to Sanders.
+
+```{r Occupation boxplots1}
+ggplot(top_occs, aes(x = reorder(occ, amt, FUN=median), y = amt)) +
+  geom_boxplot() +
+  coord_cartesian(ylim = c(0, 750)) +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5))
+
+```
+
+Not surprisingly CEOs had the largest IQR and highest median while unmployed had the lowest median, followed by professor and teacher.
+
+
+```{r contribution amt over time, fig.height=5, fig.width=10}
+
+ggplot(FL, aes(x = date, y = amt)) +
+  geom_point(alpha = .5, size = 0.75, position = 'jitter') +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5)) +
+  scale_x_date(date_breaks = "1 month") +
+   ylim(0, quantile(FL$amt, 0.90))  
+
+```
+
+Though there were some contributions so early in the campaign, I'm going to zoom in on when most of the contributions came, namely starting April 2015.
+
+```{r echo=FALSE, fig.height=5, fig.width=10}
+
+ggplot(subset(FL, date > '2015-04-01'), 
+              aes(x = date, y = amt)) +
+  geom_point(alpha = .1, size = 0.75, position = 'jitter') +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5)) +
+  scale_x_date(date_breaks = "1 month") +
+  coord_cartesian(ylim = c(0, 300)) +
+  geom_line(stat = 'summary', fun.y = quantile, fun.args = list(probs = .1),
+            linetype = 2, color = 'blue') +
+  geom_line(stat = 'summary', fun.y = quantile, fun.args = list(probs = .5),
+            color = '#FCD003') +
+  geom_line(stat = 'summary', fun.y = quantile, fun.args = list(probs = .9),
+            linetype = 2, color = 'red') 
+
+```
+
+This paints a very interesting picture indeed, though it is still too noisy.  Though there are peaks in the dollar amount of contributions 2016, the daily medians are much higher earlier on, before the conventions.  This needs to be smoothed out as there is currently one bin per day.
+
+```{r grouping by month and finding means and medians}
+FL$month <- substr(FL$date, 0, 7)
+
+
+month_groups <- group_by(FL, month)  #need to pass in a data frame and grouping
+FL_by_month <-summarise(month_groups, #need to save as a new variable
+          amt_mean = mean(amt),
+          amt_median = median(amt),
+          n = n())
+
+FL_by_month$year <- substr(FL_by_month$month, 3, 4)
+FL_by_month$monthyear <- substr(FL_by_month$month, 6,7)
+FL_by_month$monthyear <- paste (FL_by_month$year, FL_by_month$monthyear, sep = "")
+FL_by_month$monthyear <- as.yearmon(as.character(FL_by_month$monthyear), "%y%m")
+```
+
+
+```{r plotting by month}
+
+month_medians <- ggplot(subset(FL_by_month, monthyear > "April 2015"), 
+       aes(x = month, y = amt_median)) +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5)) +
+  geom_line(group = 1)
+
+month_mean <- ggplot(subset(FL_by_month, monthyear > "April 2015"), 
+       aes(x = month, y = amt_mean)) +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5)) +
+  geom_line(group = 1)
+
+grid.arrange(month_medians, month_mean, ncol =1)
+```
+
+
+According to this to this, mean and median contribution dollar amounts decreased from April 2015 on, though the early univariate histogram showed that the number of contributions increased in the final few months of the election.  Though the graphs have similar shapes, it is worth it to point out that the scales on the y-axes are quite different.
+
+
+# Bivariate Analysis
+
+### Talk about some of the relationships you observed in this part of the investigation. How did the feature(s) of interest vary with other features in the dataset? Did you observe any interesting relationships between the other features (not the main feature(s) of interest)?
+
+Bivariate plots supported truisms regarding party and candidate affiliation.  Contributions for Democratic candidates were likely to be smaller in amount and come from the unemployed, teachers, and professors.  This was particularly true for Sanders as Clinton received more contributions of higher amounts.  Contributions for Republicans tended to be of higher amount and were more popular among self-employed or business owners.  
+
+Interesting information about candidate and party support was shown across different cities, with Gainesville, a large university city showing the highest ratio of democrat to republican contributions, particularly for Sanders.  Rubio had a relatively large following in Miami which makes sense since that is where he is from.
+
+Though the univariate analyses showed that the number of contributions spiked in the summer of 2016, the final plot of the bivariate analysis showed that the dollar amount of the contributions generally declined from April 2015 on.
+
+### What was the strongest relationship you found?
+
+Democrats receive higher numbers of contributions but of a lower dollar amount.
+
+
+
+# Multivariate Plots Section
+
+
+```{r Contribution Amount Histograms faceted by party with log transforms, fig.height= 5, fig.width=10}
+
+ggplot(subset(FL, election_tp == 'P2016' | election_tp == 'G2016'),
+              aes(x = amt)) +
+  geom_histogram(bins = 50, aes(fill = party))+
+  scale_x_log10(breaks = c(1, 5, 10, 25, 50, 100, 250, 500, 1000, 2500)) +
+  scale_y_sqrt() +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5)) +
+  scale_fill_manual(values = party_color) +
+  facet_wrap(~election_tp)
+```
+
+While the number of contributions was much higher in the primaries, it is interesting to watch see how Republican contributions became left skewed towards higher dollar amounts in the general election.
+
+
+
+```{r City boxplots with ratios}
+ggplot(top_cities, 
+       aes(x = reorder(city, amt, FUN = median), y = amt, fill = ratio)) +
+  geom_boxplot() +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5)) +
+  ylim(quantile(FL$amt, 0.1), quantile(FL$amt, 0.9) )
+```
+
+Arranging these boxplots by medians shows there is no discernible relationship between median contribution amount in a city and its democratic to republican ratio.
+
+```{r Occupation boxplots, fig.height=5, fig.width=12}
+ggplot(subset(top_occs, party == 'republican' | party == 'democrat'),
+       aes(x = reorder(occ, amt, FUN=median), y = amt, fill = party)) +
+  geom_boxplot() +
+  coord_cartesian(ylim = c(0, 500)) +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5))
+
+```
+
+In all occupations except for "Information Requested" Republican contributions have a higher dollar median.  This is especially true of homemakers, attorneys, physicians, and CEOs.  
+
+
+```{r Multiple Contributor box plots3, fig.height= 6, fig.width = 14}
+
+ggplot(top_conts, 
+       aes(x = reorder(name, amt, FUN = median), y = amt, fill = cand_nm)) +
+  geom_boxplot() +
+  coord_cartesian(ylim =c(-50, 100)) +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5)) +
+  facet_wrap(~party)
+```
+
+People who contribute multiple times are far more likely to be contributing to Democratic campaigns and Republican multiple contributors had higher median amounts. Some of the multiple contributors have several negative values showing that they refund or reassign their contributions.
+
+
+```{r Multiple Contributor box plots1, fig.height= 6, fig.width = 14}
+ggplot(subset(top_conts, party == 'democrat'),
+              aes(x = reorder(name, amt, FUN = median),
+                  y = amt, fill = cand_nm)) +
+  geom_boxplot() +
+  coord_cartesian(ylim = c(0, 50)) +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5)) 
+```
+
+The median amounts for multiple Democratic contributors were all below 50 dollars, but other than that there was not much to unite them.  Sanders contributors did not switch to Hilary after the primary.
+
+```{r Multiple Contributor box plots2, fig.height= 3, fig.width = 12}
+ggplot(subset(top_conts, party == 'republican'),
+              aes(x = reorder(name, amt, FUN = median), 
+                  y = amt, fill = cand_nm)) +
+  geom_boxplot() +
+  coord_flip() +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5)) 
+```
+
+Edwin Gray contributed to three separate candiates though he strong preferred Cruz.  James Coffman only contributed to Cruz.
+
+```{r Faceted by Candidate, fig.height=7, fig.width=10}
+
+p1 <- ggplot(subset(top_cands, date > '2015-04-01' & party == 'republican'), 
+       aes(x = date, y = amt, color = cand_nm)) +
+  geom_point(alpha = .5, position = 'jitter') +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5)) +
+  scale_x_date(date_breaks = "1 month") +
+   ylim(0, quantile(FL$amt, 0.90)) 
+
+p2 <- ggplot(subset(top_cands, date > '2015-04-01' & party == 'democrat'), 
+       aes(x = date, y = amt, color = cand_nm)) +
+  geom_point(alpha = .5, position = 'jitter') +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5)) +
+  scale_x_date(date_breaks = "1 month") +
+   ylim(0, quantile(FL$amt, 0.90)) 
+
+grid.arrange(p1, p2, ncol = 1)
+
+```
+
+The abrupt shift towards the party candidate is apparent starting in June, otherwise there is too much noise to discern patterns.
+
+
+
+```{r Contribution amount over time, faceted by party1, echo=FALSE, fig.height=8, fig.width=10}
+
+two <- ggplot(subset(subset(FL, date > '2015-04-01'), 
+              (party == 'democrat' | party == 'republican')),  
+       aes(x = date, y = amt, color = party)) +
+  geom_point(alpha = .5, size = 0.75, position = 'jitter') +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5)) +
+  scale_x_date(date_breaks = "1 month") +
+  scale_color_manual(values = c("#0e50D8", "#CC0000")) +
+   ylim(0, quantile(FL$amt, 0.90)) +
+  geom_smooth(color = 'black') +
+  facet_wrap (~party)
+
+three <- ggplot(subset(subset(FL, date > '2015-04-01'), 
+              (party != 'democrat' & party != 'republican')),  
+       aes(x = date, y = amt, color = party)) +
+  geom_point(position = 'jitter') +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5)) +
+  scale_x_date(date_breaks = "1 month") +
+  scale_color_manual(values = c('#009933', '#6600CC', '#FCD003')) +
+   ylim(0, quantile(FL$amt, 0.90)) +
+  facet_wrap (~party)
+
+grid.arrange(two, three, ncol = 1)
+```
+
+As suspected, the majority of third party contributions came towards the end of the campaign.  Of the third party contributions, Green had the earliest start.  Interestingly while Democratic contributions stayed relatively steady in the last few months, with a small upswing in number and amt in August 2016, there were gaps in Republican contributions of lower amounts (<100) in June 2016 and after August 2016.  The smoother shows the uptick in the Republican contribution amount towards the end.
+
+Both general and primary contributions show a normal distribution with spikes at regular intervals, however there were many more contributions to the primaries, as previously shown. While there were more Democratic contributions overall, Republicans contributions were more left-skewed in the general election.
+
+```{r Republican Candidate Amounts, fig.height=5, fig.width=10}
+
+ggplot(subset(top_cands, date > '2015-04-01'), 
+       aes(x = date, y = amt, color = cand_nm)) +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5)) +
+  scale_x_date(date_breaks = "1 month") +
+   ylim(0, quantile(FL$amt, 0.90)) +
+  geom_smooth() +
+  facet_wrap(~party)
+
+```
+
+Though Clinton received the party nomination, the dollar amount of her contributions did not receive the jump that Trump's did once he did.  Republican contributions had a far higher variability than Democrat's contributions.
+
+
+```{r, fig.height = 10, fig.width = 10}
+less <- ggplot(subset(top_cands, 
+                      (date > "2015-04-01" & amt < 500)),
+              aes(x = date, y = cand_nm, color = party)) +
+  geom_point(alpha = 0.25, size = 0.5, position = 'jitter') +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5)) +
+  scale_x_date(date_breaks = "1 month") 
+
+more <- ggplot(subset(top_cands, 
+                      (date > "2015-04-01" & amt >= 500 & amt < 2500)),
+              aes(x = date, y = cand_nm, color = party)) +
+  geom_point(alpha = 0.25, size = 0.5, position = 'jitter') +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5)) +
+  scale_x_date(date_breaks = "1 month")
+
+even_more <- ggplot(subset(top_cands, 
+                      (date > "2015-04-01" & amt >= 2500)),
+              aes(x = date, y = cand_nm, color = party)) +
+  geom_point(alpha = 0.25, size = 0.5, position = 'jitter') +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5)) +
+  scale_x_date(date_breaks = "1 month")
+
+grid.arrange(less, more, even_more, ncol = 1)
+
+```
+This plot breaks down contributions towards candates across time, and faceted into amounts of less than 500, between 500 and 2500 and above 2500.
+
+
+```{r date-candidate-amt scatterplot, fig.height=3, fig.width=8}
+
+top_cands$scaled <- scale(top_cands$amt, center = 1)
+
+top_cand_samp <- top_cands[sample(1:length(top_cands$tran_id), 1000), ]
+
+ggplot(subset(top_cand_samp, date > '2015-04-01' & scaled > 0 & scaled < 5), 
+              aes(x = date, y = cand_nm, color = party, size = scaled)) +
+  geom_point(alpha = .5) +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5)) +
+  scale_x_date(date_breaks = "1 month") 
+```
+
+Here is a similar plot which uses only a sample of the data since with all of the data it is impossible to notice the different sizes of contributions.
+
+
+# Multivariate Analysis
+
+### Talk about some of the relationships you observed in this part of the investigation. Were there features that strengthened each other in terms of looking at your feature(s) of interest?
+
+Again it was shown that contributions to Democratic candidates tended to be smaller in dollar amount, but more frequent.  Republican contributions were particularly skewed towards larger amounts in the general election.
+
+### Were there any interesting or surprising interactions between features?
+
+- The Democratic to Republican Ratio did not effect city median dollar amount of contributions as I expected it to.
+
+- The median dollar amount in different occupations was highly split depending on party.
+
+- People who contributed multiple times were more likely to Democratic contributors rather than Republicans.
+
+- Smaller dollar amount contributions effectively stopped once Trump was announced as the party candidate.
+
+### OPTIONAL: Did you create any models with your dataset? Discuss the strengths and limitations of your model.
+
+No I did not. Almost all of the features were non numerical, meaning I would have to codify those into numerical values in order to create a regression model.  This could be interesting in order to create a model predicting which party or candidate a contribution will go towards based on the contribution amount, city, occupation and date.
+
+
+------
+
+# Final Plots and Summary
+
+### Plot One
+```{r echo=FALSE, fig.height=6, fig.width=8}
+
+rat <- ggplot(city_ratio, 
+       aes(x = reorder(city, ratio), y = ratio)) + 
+  geom_line(group = 1) + 
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5, size = 8)) +
+  scale_y_continuous(breaks = c(0, 1, 2, 3, 4, 5, 6, 7)) +
+  geom_hline(yintercept = 1, linetype = 2, color = 'red') +
+  labs(title = "Ratio of Democratic to Republican Contributions in Florida Cities",
+       x = "City", y = "Ratio")
+
+cont <- ggplot(top_cities, 
+       aes(x = reorder(city, ratio))) + 
+  geom_bar() + 
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5, size = 8)) +
+  labs(title = "Number of Total Contributions",
+       x = "City", y = "Contributions")
+
+grid.arrange(rat, cont, ncol =1)
+
+```
+
+### Description One
+This plot shows the cities ranging from most Democratic to most Republican in terms of the ratio of contributions.  In the top line graph, there is a horizontal line at y = 1 to show where perfectly equal contribution would be.  Three cities fall below the line, while the rest are above, and in some cases the ratio is many times greater Democrat than Republican. Vero Beach, the most Republican has a ratio of 0.78 meaning that there are 1.28 times more Republican votes there.  The point of the lower bar chart is to show that this ratio does not necessarily correspond to the total number of contributions, a somewhat poor proxy for the population.  I would have liked to overlay the line upon the bar graph, but I could not find a way in R to have two different y-axes with different scales, one on the left and one on the right.  Additionally, it might be better to actually find information about the actual population of these cities to see if city size does correlate with the party ratio.  Additionally, it might be interesting to find other city demographics such as median income or median age and compare it to this ratio.
+
+
+### Plot Two
+```{r Contribution amount over time, faceted by party2, echo=FALSE, fig.height=8, fig.width=10}
+
+two <- ggplot(subset(subset(FL, date > '2015-04-01'), 
+              (party == 'democrat' | party == 'republican')),  
+       aes(x = date, y = amt, color = party)) +
+  geom_point(alpha = .5, size = 0.75, position = 'jitter') +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5)) +
+  scale_x_date(date_breaks = "1 month") +
+  scale_color_manual(values = c("#0e50D8", "#CC0000")) +
+   ylim(0, quantile(FL$amt, 0.90)) +
+  geom_smooth(color = 'black') +
+  facet_wrap (~party) +
+  labs(x = "", y = "Dollar Amount of Contribution")
+
+three <- ggplot(subset(subset(FL, date > '2015-04-01'), 
+              (party != 'democrat' & party != 'republican')),  
+       aes(x = date, y = amt, color = party)) +
+  geom_point(position = 'jitter') +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5)) +
+  scale_x_date(date_breaks = "1 month") +
+  scale_color_manual(values = c('#009933', '#6600CC', '#FCD003')) +
+   ylim(0, quantile(FL$amt, 0.90)) +
+  facet_wrap (~party) +
+  labs(x = "Time", y = "Dollar Amount of Contribution")
+
+grid.arrange(two, three, ncol = 1, 
+             top = "Contribution amounts over time in different parties")
+```
+
+### Description Two
+
+This graph shows how contribution dollar amounts changed over time in the five parties.  Third party candidates received support later on, while it is interesting to notice the gaps in Republican contributions of lower amount in the final months of the campaign.
+
+### Plot Three
+```{r echo=FALSE, fig.height=4, fig.width=8}
+top_cands$Amount <- scale(top_cands$amt, center = 1)
+
+top_cand_samp <- top_cands[sample(1:length(top_cands$tran_id), 1000), ]
+
+ggplot(subset(top_cand_samp, date > '2015-04-01' & Amount > 0 & Amount < 5), 
+              aes(x = date, y = cand_nm, color = party, size = Amount)) +
+  geom_point(alpha = .3) +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5)) +
+  scale_x_date(date_breaks = "1 month") +
+  labs(title = "Contribution Amount over Time for Various Candidates", 
+       x = "Date", y = "Candidate", size = "Dollar Amount") +
+  scale_size(breaks = c(1, 2, 3, 4), 
+             labels = c("~$500", "~$1000", "~$1500", "~$2000"))
+```
+
+### Description Three
+
+This graph shows the contributions toward various candidates over time, with the size of the point roughly corresponding to the dollar amount of the contribution.  I scaled these using the scale function which normalizes the distribution around a center, which I chose to be one.  It can be seen that the majority of Trump's contributions came towards the end, and that they were larger than contributions towards some of us opponents such as Cruz or Carson.  Of the Republican canddiates, Rubio and Bush received the larges contributions.  Sanders's contributions were generally smaller than Clinton's.
+
+------
+
+# Reflection
+
+This data set gives information on over 350,000 contributions made towards the 2016 presidential election in Florida.  I intially explored various categories and discarded some because of redundancy and added a category for the political party of the candidate.  Indeed, I used this category more so than candidate to look for trends, since there were 25 different candidates.  Most of the trends or correlations I discovered fit with stereotypes regarding occupations and contribution amounts.
+
+I received a lot of practice in subsetting data to exlcude less common factors and also learned the importance of using coord_cartesian() rather than xlim or ylim to choose the graph area of boxplots. 
+
+Specifically, I wasn't sure at first how to create a subset of data based on frequency counts of certain categories.  I had to do this since if I created graphs which included all candidates, cities, or occupations, there would be too much information.  I learned that the way to subset the data to include only cities with say more than 2000 contirbutions was to create a contigency table and subset based on that.
+
+Additionally, when I first created many of the plots I used "xlim = " or "ylim = " to focus on a part of the graph, without the coord_cartesian wrapper.  Doing this actually subsets the data so that when a boxplot is created, the range, median, and IQR do not describe the full data set.  While this looks nice because all boxes fit neatly within the plot window, it does not accurately represent the data.  In doing so, I inadvertently drew false conclusions about the data.  At some point I realized what I was doing and went back and changed the code wherever appropriate.
+
+One other mistake I learned about was naming variables carefully. I named one of my line graphs "median" because it tracked median values over time.  Doing this caused all of my other plots which used "FUN = median" in order to order elements on the x-axis to stop working. I now know how important it is to give variables names that are not the same as functions.
+
+Further extension would include creating a model based on these categories to predict which candidate or party a contribution would go towards based on location, occupation, time, and contribution amount, but these variables would have to be converted to numerical values first.  To make this information more interesting, I would want to add additional data about the contributors such as age and sex as well as more demographic information about cities to make a more accurate predictive model.
+
+## References:
+- Florida Zip Code Info : http://www.unitedstateszipcodes.org/fl/
+
+- Information on Ponte Vedra: https://en.wikipedia.org/wiki/Ponte_Vedra_Beach,_Florida
+
+- Stack Exchange on Subsetting: http://stackoverflow.com/questions/20204257/subset-data-frame-based-on-number-of-rows-observations-per-group
